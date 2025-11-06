@@ -58,12 +58,23 @@ def parse_args():
     parser.add_argument('--unlearn_method', type=str, default='none', help="Name of the unlearn method")
     
     ######################### attack related parameters ################################
-    parser.add_argument('--attack_model', type=str, default='lr', choices=['dt', 'mlp', 'lr', 'rf', 'svm'], help="Attack model")
+    parser.add_argument('--attack_model', type=str, default='lr', 
+                       choices=['dt', 'mlp', 'lr', 'rf', 'svm', 'lira'],  # 添加lira
+                       help="Attack model")
+    
+    # 添加lira特有的参数
+    parser.add_argument('--lira_shadow_models', type=int, default=5, 
+                       help="Number of shadow models for LiRA attack")
+    parser.add_argument('--lira_augmentations', type=int, default=10, 
+                       help="Number of augmentations per sample for LiRA")
+    parser.add_argument('--lira_shift', type=int, default=4, 
+                       help="Shift parameter for LiRA augmentations")
+    
     parser.add_argument('--test_ratio', type=float, default=0.5, metavar='T_S', help='train-valid split ratio for attacker model training (default: 0.5)')
     # parser.add_argument('--extract_feature', type=argparse2bool, default=True, help='whether to extract feature online')
     parser.add_argument('--hidden_layer_sizes', type=list_of_ints, default='20', help="Hidden layer sizes for MLP")
     parser.add_argument('--attack_feature', type=str, default='loss', #'linear',  #'loss', #'gradient', #
-                        choices=['entropy', 'loss', 'posterior', 'linear', 'nonlinear', 'mixlayer', 'gradient', 'gradientnorm'], 
+                        choices=['entropy', 'loss', 'posterior', 'linear', 'nonlinear', 'mixlayer', 'gradient', 'gradientnorm','lira'], 
                         help="Type of sample features for membership inference attack")
     parser.add_argument('--last_k', type=int, default=1, help="Number of last layers to be used for attack")
     
@@ -71,6 +82,7 @@ def parse_args():
     parser.add_argument('--stacked', type=argparse2bool, default=False, help="Whether to use stacked features for attack")
     parser.add_argument('--include_posterior', type=argparse2bool, default=True, help="Whether to include posterior for attack")
     
+
     # ######################### defense related parameters ################################
     parser.add_argument('--is_dp_defence', type=argparse2bool, default=False)
     parser.add_argument('--top_k', type=int, default=0, choices=[0, 1, 2, 3, 4],  help=" 0 (label), 4 (no defense)")
@@ -140,6 +152,13 @@ if __name__ == "__main__":
     
     ###TODO: can set different parameters for different attack models: lr, svm, mlp, rf
     ext_param = {'hidden_layer_sizes': args.hidden_layer_sizes, 'max_iter': 600, 'random_state': args.seed, 'n_jobs': 1}
+    # 如果是lira攻击，添加额外参数
+    if args.attack_model == 'lira':
+        ext_param.update({
+            'shadow_models': args.lira_shadow_models,
+            'augmentations': args.lira_augmentations, 
+            'shift': args.lira_shift
+        })
     attack_model = get_attack_model(args.attack_model, **ext_param)
     
     logger.info(f"Initialize the feature extractor {args.attack_feature}")
@@ -147,7 +166,7 @@ if __name__ == "__main__":
     extractor = get_extractor(args.attack_feature, batch_size=args.batch_size, lossfn=args.lossfn, 
                         last_k=args.last_k, stacked=args.stacked, include_posterior=args.include_posterior)
     attack_source.set_extractor(extractor)
-    
+
     logger.info("Launching MI attack .....")
     
     if args.forget_classes is None:
@@ -157,6 +176,54 @@ if __name__ == "__main__":
         logger.info(" ***** Forget specific classes data!")
         pos_data, neg_data = data['forget'], data_unlearn['test']
     
+    logger.info("Setting up transforms for LiRA attack...")
+
+    # 保存原始transform
+    def get_dataset_transform(dataset):
+        """安全地获取数据集的transform"""
+        if hasattr(dataset, 'transform'):
+            return dataset.transform
+        elif hasattr(dataset, 'dataset') and hasattr(dataset.dataset, 'transform'):
+            return dataset.dataset.transform
+        else:
+            return None
+
+    def set_dataset_transform(dataset, transform):
+        """安全地设置数据集的transform"""
+        if hasattr(dataset, 'transform'):
+            dataset.transform = transform
+        elif hasattr(dataset, 'dataset') and hasattr(dataset.dataset, 'transform'):
+            dataset.dataset.transform = transform
+        # 如果都没有transform属性，我们无法设置，但至少不会报错
+
+    original_pos_transform = get_dataset_transform(pos_data)
+    original_neg_transform = get_dataset_transform(neg_data)
+
+    # 创建一个兼容的transform，确保不包含需要标签的增强（如Mixup）
+    compatible_transform = preproc.get_transform("normal", num_classes)
+
+    # 应用兼容transform
+    set_dataset_transform(pos_data, compatible_transform)
+    set_dataset_transform(neg_data, compatible_transform)
+
+    ## generate the attack data
+    ## get the data for training and testing the attack models
+    try:
+        if not os.path.exists(attack_data_path):
+            logger.info(f"#### Generate attack data and Save to {attack_data_path}")
+            attack_data = attack_source.build_source_data(pos_data, neg_data, tar_model, device)
+            attack_data_reform = attack_source.data_reform(attack_data, constructor, is_defence=args.is_dp_defence, top_k=args.top_k)
+            attack_source.save_features(attack_data_reform, attack_data_path)
+        
+        logger.info(f"#### Load attack data {attack_data_path}")
+        attack_data = attack_source.load_features(attack_data_path)
+        
+    finally:
+        # 恢复原始transform
+        set_dataset_transform(pos_data, original_pos_transform)
+        set_dataset_transform(neg_data, original_neg_transform)
+        logger.info("Restored original data transforms")
+
     ## construct the balanced dataset for attack
     min_size = min(len(pos_data), len(neg_data))
     pos_indices = random.sample(range(len(pos_data)), min_size)
