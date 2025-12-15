@@ -45,6 +45,16 @@ class BasicUnlearnSchema(BasicSchema):
         train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, num_workers=num_workers)
         valid_loader = DataLoader(valid_data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
         test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        # If GA-KL regularization is requested, build a retain loader and attach to model.params
+        try:
+            if hasattr(model, 'params') and model.params is not None and model.params.get('use_ga_kl', False):
+                retain_dataset = model.params.get('retain_dataset', None)
+                if retain_dataset is not None:
+                    retain_loader = DataLoader(retain_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+                    model.params['retain_loader'] = retain_loader
+        except Exception:
+            # keep backward compatibility on any failure
+            pass
         best_raw_model = model.train_(train_loader, test_loader, valid_loader, ckpt_path, device, mask)
         self.logger.info('Train done!')
         return model

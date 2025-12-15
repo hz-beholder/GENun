@@ -10,8 +10,32 @@ from utils import load_model
 
 __SHALLOWMODELSET__ = ['lr', 'dt', 'svm', 'mlp', 'rf']
 __DEEPMODELSET__ = ['mlps', 'logistic', 'simple_cnn', 'resnet18', 'resnet34', 'resnet50', 'densenet', 'vgg', 'vit','ALLCNN']
+def _get_dataset_targets(dataset):
+    """安全地获取数据集的标签列表，兼容 Subset/ConcatDataset等"""
+    if hasattr(dataset, 'targets'):
+        targets = dataset.targets
+    elif hasattr(dataset, 'labels'):
+        targets = dataset.labels
+    elif hasattr(dataset, 'dataset'):        # Subset
+        return _get_dataset_targets(dataset.dataset)
+    elif hasattr(dataset, 'datasets'):       # ConcatDataset
+        targets = []
+        for d in dataset.datasets:
+            targets.extend(_get_dataset_targets(d))
+        return targets
+    else:
+        # 兜底：遍历一次
+        from torch.utils.data import DataLoader
+        loader = DataLoader(dataset, batch_size=256, shuffle=False, num_workers=0)
+        targets = []
+        for _, y in loader:
+            targets.extend(y.tolist())
+        return targets
 
-
+    # 统一转 list，防止 ndarray 拼接出错
+    if isinstance(targets, np.ndarray):
+        return targets.tolist()
+    return list(targets)
 class ShallowModels(object):
     def __init__(self, model_name, log_path, logname):
         assert model_name in __SHALLOWMODELSET__, "invalid model type, which should be one of %s" % __SHALLOWMODELSET__
@@ -90,7 +114,7 @@ class DeepModels(object):
         self.params['epochs'] = kwargs.get('epochs', 40)
         self.params['lamb_reg'] = kwargs.get('lamb', 0.0)
         self.params['no_reg_epochs'] = kwargs.get('no_reg_epochs', 0)
-        self.params['patience'] = kwargs.get('patience', 20)
+        self.params['patience'] = kwargs.get('patience', 10)
         self.params['optim'] = kwargs.get('optim', 'adam')
         self.params['minlr'] = kwargs.get('minlr', 0.0001)
         self.params['maxlr'] = kwargs.get('maxlr', 0.001)
@@ -118,11 +142,13 @@ class DeepModels(object):
     def resume(self, resume_path):
         self.logger.info(f"Model resumed from {resume_path}")
         self.load(path.join(resume_path))
-    
     def train_(self, train_loader, test_loader, valid_loader, ckpt_path, device='cuda', mask=None):
         assert self.params is not None, "Please set the parameter configuration first"
-        
-        num_classes = len(np.unique(train_loader.dataset.targets))  # self.params['num_classes']  #
+
+        targets = _get_dataset_targets(train_loader.dataset)
+        num_classes = len(np.unique(targets))
+
+        # num_classes = len(np.unique(train_loader.dataset.targets))  # self.params['num_classes']  #
         num_train, num_test = len(train_loader.dataset), len(test_loader.dataset)
         num_val = len(valid_loader.dataset) if valid_loader is not None else 0
         

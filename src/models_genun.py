@@ -57,7 +57,7 @@ class UnlearnBasic():
             'regularizer': kwargs.get('regularizer', 'l1'), # option: 'l1', 'l2', 'l1+l2', 'l1_diff', 'l2_diff'
             'regular_gamma': kwargs.get('gamma', 1e-4),
             'no_reg_epochs': kwargs.get('no_reg_epochs', 0),
-            'alpha': kwargs.get('alpha', 0.5),   # trade-off between loss of retain and forget data (Hyperparameter tuning is needed 0.1 - 0.8 suggested)
+            'alpha': kwargs.get('alpha', 1.0),   # trade-off between loss of retain and forget data (Hyperparameter tuning is needed 0.1 - 0.8 suggested)
             # 'class_wise': kwargs.get('class_wise', False),
             # 'strength': kwargs.get('stength', 1.0),
             'dynamic_weight': kwargs.get('dynamic_weights', False),
@@ -241,7 +241,7 @@ class GeneModUnlearn(UnlearnBasic):
         val_loss, val_acc = test(model, self.loader_dict['valid'], criterion, device)
         self.logger.info(f"++++++++++++++++ Before finetuning +++++++++++++++ ")
         self.logger.info(f"Loss: (retain - {tr_init_loss:.4f}, val - {val_loss:.3f}), Acc: (retain - {tr_init_acc:.4f}, val - {val_acc:.4f})")
-
+        self.logger.info(f"actual alpha used in training: {self.params['alpha']}")
         best_model = None
         cum_time, best_time = 0.0, 0.0
         best_metric, best_iter = 0.0, -1
@@ -303,7 +303,8 @@ class GeneModUnlearn(UnlearnBasic):
                         regular = 0.0
                                         
                     loss_r = criterion(out_r, tar_r) +  cur_gamma * regular
-                    loss = self.params['alpha'] * loss_r - (1 - self.params['alpha']) * criterion(out_f, tar_f)
+                    loss_f = criterion(out_f, tar_f)
+                    loss = self.params['alpha'] * loss_r - (1 - self.params['alpha']) * loss_f
                     loss.backward()
                     nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
                     optimizer.step()

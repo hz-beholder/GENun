@@ -118,8 +118,8 @@ if __name__ == "__main__":
     outs.content = args.out_dir
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else "cpu")
 
-    args.model_path = "./outs/cifar10_-1_difval/model_bases/cifar10_resnet18/ORG/" + \
-        "cifar10_resnet18_seed-0_Nf-1000_ep-25_bs-256_lr-[0_0001-0_001]_wd-5e-05_opt-Adam_trTrans-normal_tsTrans-test_regular_1e-07_sched-None.pth"
+    #args.model_path = "./outs/cifar10_-1_difval/model_bases/cifar10_resnet18/ORG/" + \
+        #"cifar10_resnet18_seed-0_Nf-1000_ep-25_bs-256_lr-[0_0001-0_001]_wd-5e-05_opt-Adam_trTrans-normal_tsTrans-test_regular_1e-07_sched-None.pth"
 
     from data_tool import DataLoaderTool, DataStore, construct_data
     DataStore.create_basic_folders()

@@ -69,7 +69,7 @@ def main(
         weight_decay=0.0,
         scheduler="none",
         batch_size=batch_size,
-        loss_sign=1.0,  # WGA 分支内部已对 CE 取负
+        loss_sign=1.0,  
         regularization="none",
         dynamic_regular=False,
     )

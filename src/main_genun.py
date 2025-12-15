@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument('--class_wise', type=argparse2bool, default=True, help='whether to use class-wise feedback')
     parser.add_argument('--save_checkpoint', type=argparse2bool, default=False, help='whether to save the checkpoint')
     
-    parser.add_argument('--over_forget', type=argparse2bool, default=False, help='whether using the forget-set for finetuning (weighted GA)')
+    parser.add_argument('--over_forget', type=argparse2bool, default=True, help='whether using the forget-set for finetuning (weighted GA)')
     parser.add_argument('--regularizer', type=str, default='l1', choices=['none', 'l1', 'l2', 'l1+l2', 'l1_diff', 'l2_diff'], help='weights regularization type')
     parser.add_argument('--gamma', type=float, default=1e-5, help='regularization parameter for weight regularization (default: 1e-5)')
     parser.add_argument('--alpha', type=float, default=1.0, help='trade-off between loss of retain and forget data (default: 0.5)')
@@ -306,7 +306,7 @@ if __name__ == "__main__":
     logger.info("Set parameters and basic configurations")
     
     # 支持多学习率尝试
-    lr_list = [1e-5, 2e-3]  # 可自行扩展
+    lr_list = [ 0.001 ]  # 可自行扩展
     for lr in lr_list:
         args.lr = lr
         logger.info(f"==== Running GenUn with lr={lr} ====")

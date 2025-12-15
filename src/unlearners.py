@@ -158,6 +158,7 @@ class UnlearnGradientAscent(BasicUnlearnSchema):
         assert model.params is not None, "Please set the parameter configuration first"
         self.logger.info(f" ###### Tune the original model using forget data with negative gradient ######")
         model.params['loss_sign'] = -1.0
+        model.params['regularization'] = 'l1+l2'
         model_ = self._train_(model, data['forget'], data['valid'], data['test'], ckpt_path + self.__get_name__(), batch_size, device)
         model_.params['loss_sign'] = 1.0
         self.logger.info(f"==> Model unlearning done!")

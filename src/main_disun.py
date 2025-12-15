@@ -45,7 +45,7 @@ def parse_args():
     parser.add_argument('--sequential', type=argparse2bool, default=False, help='whether to use sequential model')
     
     ## unlearning related parameters
-    parser.add_argument('--epochs', type=int, default=10, metavar='E', help='number of epochs for unlearning (default: 20)')
+    parser.add_argument('--epochs', type=int, default=5, metavar='E', help='number of epochs for unlearning (default: 20)')
     parser.add_argument('--batch_size', type=int, default=128, metavar='B', help='input batch size for training (default: 128)')
     parser.add_argument('--lr', type=float, default=0.001, help='initial learning rate (default: 0.001)')
     parser.add_argument('--lr_feedback', type=float, default=0.001, help='initial learning rate for feedback (default: 0.001)')

@@ -451,7 +451,7 @@ class LIRAFExtractor(ExtractBase):
     
     def __init__(self, batch_size=256, lossfn='ce', last_k=1, 
                  stacked=False, include_posterior=True,
-                 shadow_models=5, augmentations=10, shift=4):
+                 shadow_models=8, augmentations=10, shift=4):
         super().__init__(stacked=stacked, include_posterior=include_posterior)
         self.batch_size = batch_size
         self.lossfn = lossfn

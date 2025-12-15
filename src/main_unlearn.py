@@ -29,7 +29,7 @@ def parse_args():
     
     ### dataset related parameters
     parser.add_argument('--dataset', type=str, default='cifar10',
-                        choices=['mnist', 'cifar10', 'cifar100', 'stl10', 'imagenet', 'vggface2', 'svhn', 'fashionmnist',],
+                        choices=['mnist', 'cifar10', 'cifar100', 'stl10', 'imagenet', 'vggface2', 'svhn', 'fashionmnist','tiny_imagenet','imagenet'],
                         help='dataset for training (default: cifar10)')
     parser.add_argument('--select_classes', type=list_of_ints, default='3,8', 
                         help='selected classes for small dataset (default: 3,8)')
@@ -44,7 +44,7 @@ def parse_args():
         
     ## model related parameters
     parser.add_argument('--arch', type=str, default='resnet18',
-                        choices=['mlps', 'logistic', 'simple_cnn', 'resnet18', 'resnet34', 'resnet50', 'densenet', 'vit', 'vgg','ALLCNN'],
+                        choices=['mlps', 'logistic', 'simple_cnn', 'resnet18', 'resnet34', 'resnet50', 'densenet', 'vit', 'vgg','ALLCNN','resnet50'],
                         help='model architecture (default: resnet18)')
     parser.add_argument('--pretrained', type=argparse2bool, default=True, help='whether to use pretrained model')
     
@@ -72,7 +72,7 @@ def parse_args():
     parser.add_argument('--maxlr', type=float, default=0.001, help='the maximum learning rate (default: 0.001)')
     parser.add_argument('--minlr', type=float, default=0.001, help='the minimum learning rate (default: 0.001)')
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum for SGD (default: 0.9)')
-    parser.add_argument('--weight_decay', type=float, default=0, help='weight decay (default: 0)')   
+    parser.add_argument('--weight_decay', type=float, default=5e-05, help='weight decay (default: 0)')   
     parser.add_argument('--lamb', type=float, default=1e-6, help='regularization parameter (default: 1e-8)')
 
     ## model training with data augmentation or mixup

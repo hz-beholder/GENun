@@ -598,7 +598,7 @@ def train(model, train_loader, valid_loader, test_loader, params, logger,
         #                         f'Acc: Tr:{tr_acc:.4f}, Ts:{ts_acc:.4f}, DIFF.:{ts_acc - tr_acc:.4f}')
 
         ## @ save the well-generalized model during the training process
-        if iter_ == 0 or (val_acc > best_metric and acc_diff <= tr_acc - val_acc):  # val_acc >= tr_acc
+        if iter_ == 0 or (val_acc > best_metric and acc_diff >= tr_acc - val_acc):  # val_acc >= tr_acc
             logger.info('  +++> Well-generalized model checkpoint: [{:.4f}]\t'.format(best_metric) + 'current: [{:.4f}]'.format(val_acc))
             acc_diff = tr_acc - val_acc
             save_model(model, f'{checkpoint_dir}_GENE_M_{iter_}.pt')
@@ -769,6 +769,8 @@ def mia_cvs(sample_loss, attack_model, members, n_splits=10, random_state=0):
 def fisher_hessian(model, loader, criterion, device):
     model = model.to(device)
     model.eval()
+    
+    # 初始化梯度累积变量
     for param in model.parameters():
         param.grad_acc = 0
         param.grad2_acc = 0
@@ -783,17 +785,21 @@ def fisher_hessian(model, loader, criterion, device):
             loss = criterion(outputs, pred_tar)
             model.zero_grad()
             loss.backward(retain_graph=True)
+            
             for param in model.parameters():
-                if param.requires_grad:
-                    param.grad_acc += (labels == pred_tar).float() * param.grad.data
-                    param.grad2_acc +=  prob[:, c_i] * param.grad.data.pow(2)
+                if param.requires_grad and param.grad is not None:  # 添加梯度非空检查
+                    grad_data = param.grad.data
+                    param.grad_acc += (labels == pred_tar).float() * grad_data
+                    param.grad2_acc += prob[:, c_i] * grad_data.pow(2)
     
+    # 标准化
     for param in model.parameters():
-        param.grad_acc /= len(loader)
-        param.grad2_acc /= len(loader)
+        if hasattr(param, 'grad_acc'):  # 确保属性存在
+            param.grad_acc /= len(loader)
+        if hasattr(param, 'grad2_acc'):
+            param.grad2_acc /= len(loader)
     
     return model
-    
 
 def get_mean_var(parameters, num_classes, is_forget_class=False, class_forget=0, lamb=3e-6):
     var = deepcopy(1./(parameters.grad2_acc + 1e-8))

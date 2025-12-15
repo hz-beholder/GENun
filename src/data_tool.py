@@ -17,7 +17,7 @@ from dataset.small_CIFFAR10 import Small_Binary_CIFAR10, Small_CIFAR10, Small_CI
 CATEGORICAL_DATASETS = ['adult', 'accident', 'location']
 
 IMAGE_DATASETS = ['imagenet', 'svhn', 'stl10', 'mnist', #'small_mnist', 'small_mnist_2', 
-                'smbincifar10', 'smcifar5', 'smcifar10', 'cifar10', 'cifar100', ]
+                'smbincifar10', 'smcifar5', 'smcifar10', 'cifar10', 'cifar100','tiny_imagenet','imagenet']
 
 class ListToDataset(Dataset):
     def __init__(self, samples):
@@ -172,7 +172,22 @@ class DataLoaderTool:
             transforms.Normalize(mean, std),
         ])
         return augment_transform, normal_transform
-
+    @staticmethod
+    def __tiny_imagenet_transform__():
+        mean, std, crop_size = dataset_normalizer('tiny_imagenet')
+        augment_transform = transforms.Compose([
+            transforms.RandomCrop(crop_size, padding=4),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std),
+        ])
+        normal_transform = transforms.Compose([
+            transforms.Resize(crop_size),
+            transforms.CenterCrop(crop_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std),
+        ])
+        return augment_transform, normal_transform
     def __svhn_transform__():
         mean, std, crop_size = dataset_normalizer('svhn')
         augment_transform = transforms.Compose([
@@ -200,6 +215,8 @@ class DataLoaderTool:
             return DataLoaderTool.__imagenet_transform__()
         elif dataset_name == 'svhn':
             return DataLoaderTool.__svhn_transform__()
+        elif dataset_name == 'tiny_imagenet':
+            return DataLoaderTool.__tiny_imagenet_transform__()
         else:
             raise Exception("invalid dataset name")
     
@@ -262,8 +279,47 @@ class DataLoaderTool:
             train_dataset = CustomSVHN(raw_path + 'svnh', split='train', download=True, transform=train_transform)
             test_dataset = CustomSVHN(raw_path + 'svnh', split='test', download=True, transform=test_transform)
         elif dataset_name == 'imagenet':
-            train_dataset = datasets.ImageFolder(raw_path + 'imagenet', split='train', transform=train_transform)
-            test_dataset = datasets.ImageFolder(raw_path + 'imagenet', split='test', transform=test_transform)
+            train_dir = path.join(raw_path, 'imagenet', 'train')
+            val_dir   = path.join(raw_path, 'imagenet', 'val')
+            if not path.isdir(train_dir) or not path.isdir(val_dir):
+                raise FileNotFoundError(
+                    f"ImageNet 未放在 {raw_path}/imagenet/{{train,val}} 下，或目录名大小写不匹配"
+                )
+            
+            # 加载完整训练集
+            full_train_dataset = datasets.ImageFolder(train_dir, transform=train_transform)
+            
+            # 每类只取500张图片
+            samples_per_class = 500
+            selected_indices = []
+            
+            # 按类别分组索引
+            class_indices = {}
+            for idx, (_, label) in enumerate(full_train_dataset):
+                if label not in class_indices:
+                    class_indices[label] = []
+                class_indices[label].append(idx)
+            
+            # 从每个类别中随机选择500个样本
+            for label, indices in class_indices.items():
+                if len(indices) > samples_per_class:
+                    selected = np.random.choice(indices, samples_per_class, replace=False)
+                else:
+                    selected = indices  # 如果某类少于500张，取全部
+                selected_indices.extend(selected)
+            
+            # 创建子集
+            train_dataset = SubsetDataset(full_train_dataset, selected_indices)
+            test_dataset = datasets.ImageFolder(val_dir, transform=test_transform)
+        elif dataset_name == 'tiny_imagenet':
+            train_dataset = datasets.ImageFolder(
+                root=path.join(raw_path, 'tiny_imagenet', 'train'),
+                transform=train_transform
+            )
+            test_dataset = datasets.ImageFolder(
+                root=path.join(raw_path, 'tiny_imagenet', 'val'),
+                transform=test_transform
+            )
         else:
             raise Exception("invalid dataset name")
 
@@ -299,6 +355,7 @@ class DataStore:
             "cifar100": [32, 32, 3],
             "imagenet": [224, 224, 3],
             "svhn": [32, 32, 3],
+            "tiny_imagenet": [64, 64, 3],
         }
         
         crop_size = {
@@ -308,6 +365,7 @@ class DataStore:
             "stl10": 96,
             "imagenet": 224,
             "svhn": 32,
+            "tiny_imagenet": 64,
         }
         
         num_classes = {
@@ -325,6 +383,7 @@ class DataStore:
             "stl10": 10,
             "imagenet": 1000,
             "svhn": 10,
+            "tiny_imagenet": 200,
         }
         
         return features_dims[dataset], num_classes[dataset]
@@ -375,6 +434,10 @@ def dataset_normalizer(dataset):
         mean = (0.485, 0.456, 0.406)
         std = (0.229, 0.224, 0.225)
         crop_size = 96
+    elif 'tiny_imagenet' in dataset:
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
+        crop_size = 64
     else:
         raise ValueError("Dataset not found")
 
@@ -456,5 +519,5 @@ def construct_data(train_data, test_data, train_size=-1,
         data_unlearn['train'] = flatten_subset(Subset(train_data, train_forget_index))
         data_unlearn['valid'] = flatten_subset(Subset(valid_data, valid_forget_index))
         data_unlearn['test'] = flatten_subset(Subset(test_data, test_forget_index))
-        
+    
     return data, data_unlearn, data_retain

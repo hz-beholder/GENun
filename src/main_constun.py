@@ -66,13 +66,13 @@ def parse_args():
                         choices=['running', 'moment'])  # ['FT', 'LASTK', 'RL', 'GA', 'DISTILL']
     parser.add_argument('--lossfn', type=str, default='ce', choices=['ce', 'bce', 'mse'])
     parser.add_argument('--optim', type=str, default="adam", choices=['adam', 'sgd', 'adamw'])
-    parser.add_argument('--patience', type=int, default=10, help='patience for early stopping (default: 10)')
+    parser.add_argument('--patience', type=int, default=50, help='patience for early stopping (default: 10)')
     parser.add_argument('--scheduler', default='CosineAnnealingWarmRestarts', #'CosineAnnealingLR', #'None', # 'LRScheduler', #
                         choices = ['CosineAnnealingWarmRestarts', 'CosineAnnealingLR', 'LRScheduler', 'None'],
                         help='Pytorch Scheduler name: (default: The one used for train')
 
     ## protocal parameters
-    parser.add_argument('--last_k', type=int, default=3, 
+    parser.add_argument('--last_k', type=int, default=1, 
                         help="Number of last layers to be used for retraining for unlearning (default: 1)")
     parser.add_argument('--re_init', type=argparse2bool, default=True, 
                         help="Whether to re-initialize the weight of last layers for LastKlayer unlearning")   
@@ -94,9 +94,9 @@ def parse_args():
                         help="data augmentation for preprocessing the testing data",)
     
     parser.add_argument('--augment_retain', type=argparse2bool, default=False, help='whether to augment the retain data')
-    parser.add_argument('--weight_forget', type=float, default=1.0, help='weight for the forget data (default: 1.0)')
-    parser.add_argument('--weight_retain', type=float, default=1.0, help='weight for the retain data (default: 1.0)')
-    parser.add_argument('--projector_dimension', type=int, default=256, help='dimension of the projector (default: 256)')
+    parser.add_argument('--weight_forget', type=float, default=0.8, help='weight for the forget data (default: 1.0)')
+    parser.add_argument('--weight_retain', type=float, default=0.2, help='weight for the retain data (default: 1.0)')
+    parser.add_argument('--projector_dimension', type=int, default=512, help='dimension of the projector (default: 256)')
     parser.add_argument('--outs_dimension', type=int, default=128, help='dimension of the output (default: 128)')
     
     
