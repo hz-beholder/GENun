@@ -36,7 +36,7 @@ class CustomSubset(Subset):
 # =============================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Strict U-LiRA with Full Evaluation")
+    parser = argparse.ArgumentParser(description="Strict U-LiRA with Accuracy Evaluation")
     parser.add_argument('--logname', default='ulira_strict')
     parser.add_argument('--log_dir', default='.')
     parser.add_argument('--out_dir', default='./ulira_strict_outs/')
@@ -117,7 +117,7 @@ class ModelDataSplitter:
         self.test_indices = unseen_cls5_global[:forget_size] 
 
     def get_splits(self):
-        valid_len = 1000
+        valid_len = 2500
         retain_train_indices = self.retain_indices[:-valid_len]
         valid_indices = self.retain_indices[-valid_len:]
         
@@ -156,15 +156,17 @@ def run_model_lifecycle(args, model_name, splitter, official_test_set, device, l
     org_path = os.path.join(args.out_dir, f"{model_name}_org.pth")
     
     if not os.path.exists(org_path):
+        # logger.info(f"Training {model_name} (Original)...")
         builder = BuildLearn(args.log_dir, f"{model_name}_log")
         data_dict = {
             'train': splits['train'], 
             'valid': splits['valid'], 
-            'test': official_test_set 
+            'test': official_test_set # 官方测试集用于 Utility 监控
         }
         model = builder.model_unlearn(model, data_dict, args.batch_size, device, org_path, is_train=True)
         torch.save(model._model.state_dict(), org_path)
     else:
+        # logger.info(f"Loading {model_name} (Original)...")
         model._model.load_state_dict(torch.load(org_path, map_location=device))
 
     # B. 遗忘
@@ -191,7 +193,7 @@ def run_model_lifecycle(args, model_name, splitter, official_test_set, device, l
             'forget': splits['forget'],
             'retain': splits['retain'],
             'valid': splits['valid'],
-            'test': official_test_set 
+            'test': official_test_set # 官方测试集用于 Utility 监控
         }
         
         kwargs = {}
@@ -202,12 +204,13 @@ def run_model_lifecycle(args, model_name, splitter, official_test_set, device, l
         )
         torch.save(unlearn_model._model.state_dict(), unlearn_path)
     else:
+        # logger.info(f"Loading {model_name} ({args.unlearn_method})...")
         unlearn_model._model.load_state_dict(torch.load(unlearn_path, map_location=device))
         
     return unlearn_model, splits
 
 # ==============================================================================
-# 3. 工具函数
+# 3. 工具函数 (Accuracy Evaluation & LiRA Score)
 # ==============================================================================
 @torch.no_grad()
 def eval_accuracy(model, data_dict, batch_size, device):
@@ -218,6 +221,7 @@ def eval_accuracy(model, data_dict, batch_size, device):
     results = {}
     
     for name, dataset in data_dict.items():
+        # 强制设置 num_workers=4 避免死锁
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
         correct = 0
         total = 0
@@ -287,17 +291,22 @@ def main():
         args, "target", target_splitter, official_test_dataset, device, logger
     )
     
-    # === 目标模型评估 ===
+    # ++++++++++++++++++++++ 插入评估逻辑 ++++++++++++++++++++++
     logger.info(f"Evaluating Target Model (Unlearn Method: {args.unlearn_method})...")
     eval_sets = {
-        'Forget Set': target_splits['forget'],
-        'Retain Set': target_splits['retain'],
-        'Official Test': official_test_dataset
+        'Forget Set (D_f)': target_splits['forget'],
+        'Retain Set (D_r)': target_splits['retain'],
+        'Official Test Set': official_test_dataset
     }
+    
     accs = eval_accuracy(target_model, eval_sets, args.batch_size, device)
     
-    logger.info(f"Target Model Stats: Forget Acc={accs['Forget Set']:.4f}, "
-                f"Retain Acc={accs['Retain Set']:.4f}, Test Acc={accs['Official Test']:.4f}")
+    logger.info("++++++++++ Post-Unlearn Accuracy Metrics ++++++++++")
+    logger.info(f"Forget Set Acc:      {accs['Forget Set (D_f)']:.4f}  (Should be LOW for unlearning, HIGH for ORG)")
+    logger.info(f"Retain Set Acc:      {accs['Retain Set (D_r)']:.4f}  (Should be HIGH)")
+    logger.info(f"Official Test Acc:   {accs['Official Test Set']:.4f}  (Utility metric)")
+    logger.info("+++++++++++++++++++++++++++++++++++++++++++++++++")
+    # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
     
     target_forget_indices = target_splits['indices']['forget']
     
@@ -340,18 +349,6 @@ def main():
             s_model, s_splits = run_model_lifecycle(
                 args, s_name, s_splitter, official_test_dataset, device, logger
             )
-            
-            # === 影子模型评估 (抽样评估，避免刷屏) ===
-            # 只对第 0 个和每 50 个影子模型输出评估信息，确保影子模型的行为正常
-            if i == 0 or (i + 1) % 50 == 0:
-                s_eval_sets = {
-                    'Forget Set': s_splits['forget'],
-                    'Retain Set': s_splits['retain'],
-                    'Official Test': official_test_dataset
-                }
-                s_accs = eval_accuracy(s_model, s_eval_sets, args.batch_size, device)
-                logger.info(f"[Shadow {i}] Stats: Forget Acc={s_accs['Forget Set']:.4f}, "
-                            f"Retain Acc={s_accs['Retain Set']:.4f}, Test Acc={s_accs['Official Test']:.4f}")
             
             scores = compute_scaled_logit(s_model, eval_loader, device, eval_labels)
             
