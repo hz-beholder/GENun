@@ -5,7 +5,7 @@
 # 如果文件在 src 目录下，保持如下；如果在当前目录，改为 "./shadow3.py"
 PYTHON_SCRIPT="./src/shadow3.py" 
 
-METHOD="FT"
+METHOD="ORG"
 OUT_DIR="./ulira_distributed_results"
 TOTAL_GPUS=8
 # ===========================================
