@@ -5,14 +5,14 @@
 # 如果文件在 src 目录下，保持如下；如果在当前目录，改为 "./shadow3.py"
 PYTHON_SCRIPT="./src/shadow3.py" 
 
-METHOD="GENF"
-OUT_DIR="./ulira_distributed_results"
+METHOD="GENM"
+OUT_DIR="./ulira_distributedcopy_results"
 TOTAL_GPUS=8
 # ===========================================
 
 # 【新增】在此处修改遗忘参数
-UNLEARN_EPOCHS=2      # 遗忘训练轮数 (对应 Python 中的 --epochs)
-UNLEARN_LR=0.002   # 遗忘学习率 (对应 Python 中的 --lr)
+UNLEARN_EPOCHS=10      # 遗忘训练轮数 (对应 Python 中的 --epochs)
+UNLEARN_LR=0.0002   # 遗忘学习率 (对应 Python 中的 --lr)
 echo "Starting distributed training with $TOTAL_GPUS GPUs for method $METHOD..."
 
 # 【修复 1】 在 Python 运行前，必须先由 Shell 创建好日志目录

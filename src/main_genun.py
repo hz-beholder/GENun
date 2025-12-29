@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+# 保持你原有的引用不变
 from logger import create_logger
 from model_deep import get_model
 from transforms import Transforms
@@ -30,9 +31,19 @@ def parse_args():
     parser.add_argument('--num_samples', type=int, default=-1, help='number of samples per class selected for small dataset')
     parser.add_argument('--num_workers', type=int, default=8, metavar='N', help='number of workers for data loading (default: 4)')
     parser.add_argument('--valid_size', type=int, default=5000, metavar='V', help='number of validation samples (default: 5000)')
-    # parser.add_argument('--top_k', type=int, default=-1, metavar='K', help='number of selected informative samples (default: 5000)')
-    parser.add_argument('--num_to_forget', type=int, default=1000, metavar='Nf', help='number of samples to forget (default: 5000)')
+    
+    # 随机遗忘时的数量，如果是类别遗忘，代码中会将其覆盖为 -1 (全部)
+    parser.add_argument('--num_to_forget', type=int, default=5000, metavar='Nf', help='number of samples to forget (default: 5000)')
+    
+    # 核心控制参数：为空则为随机遗忘，为"5"则为类别遗忘
     parser.add_argument('--forget_classes', default=None, metavar='Cf', help='classes to forget (default: None)')
+    
+    # ================= [新增参数] =================
+    # True: 冻结骨干+Mask最后一层 (默认) | False: 更新所有参数 (类似随机遗忘的更新方式)
+    parser.add_argument('--mask_updates', type=argparse2bool, default=True, 
+                        help='If True, freeze backbone and mask gradient for other classes. If False, update all parameters.')
+    # ============================================
+
     parser.add_argument('--sample_ratio', type=float, default=1.0, help='sample ratio for the retain dataset (default: 0.5)')
     
     parser.add_argument('--arch', type=str, default='resnet18', help='model architecture (default: resnet18)',
@@ -43,17 +54,15 @@ def parse_args():
     parser.add_argument('--epochs', type=int, default=10, metavar='E', help='number of epochs for unlearning (default: 20)')
     parser.add_argument('--batch_size', type=int, default=256, metavar='B', help='input batch size for training (default: 128)')
     parser.add_argument('--lr', type=float, default=2e-4, help='initial learning rate (default: 0.001)')
-    # parser.add_argument('--lr_feedback', type=float, default=0.001, help='initial learning rate for feedback (default: 0.001)')
-    # parser.add_argument('--generalize', type=argparse2bool, default=True, help='whether to contain generalization loss')
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum (default: 0.9)')
     parser.add_argument('--weight_decay', type=float, default=5e-4, help='weight decay (default: 0.0005)')
     parser.add_argument('--class_wise', type=argparse2bool, default=True, help='whether to use class-wise feedback')
     parser.add_argument('--save_checkpoint', type=argparse2bool, default=False, help='whether to save the checkpoint')
     
     parser.add_argument('--over_forget', type=argparse2bool, default=True, help='whether using the forget-set for finetuning (weighted GA)')
-    parser.add_argument('--regularizer', type=str, default='l1', choices=['none', 'l1', 'l2', 'l1+l2', 'l1_diff', 'l2_diff'], help='weights regularization type')
-    parser.add_argument('--gamma', type=float, default=1e-5, help='regularization parameter for weight regularization (default: 1e-5)')
-    parser.add_argument('--alpha', type=float, default=1.0, help='trade-off between loss of retain and forget data (default: 0.5)')
+    parser.add_argument('--regularizer', type=str, default='l1+l2', choices=['none', 'l1', 'l2', 'l1+l2', 'l1_diff', 'l2_diff'], help='weights regularization type')
+    parser.add_argument('--gamma', type=float, default=5e-5, help='regularization parameter for weight regularization (default: 1e-5)')
+    parser.add_argument('--alpha', type=float, default=0.97, help='trade-off between loss of retain and forget data (default: 0.5)')
     parser.add_argument('--no_reg_epochs', type=int, default=0, help='number of epochs without regularization (default: 0)')
     parser.add_argument('--dynamic_weight', type=argparse2bool, default=False, help='dynamic_weight for feedback loss (default: False)')
 
@@ -62,7 +71,7 @@ def parse_args():
     parser.add_argument('--lossfn', type=str, default='ce', choices=['ce', 'bce', 'mse'])
     parser.add_argument('--optim', type=str, default="adam", choices=['adam', 'sgd', 'adamw'])
     parser.add_argument('--patience', type=int, default=10, help='patience for early stopping (default: 10)')
-    parser.add_argument('--scheduler', default='CosineAnnealingWarmRestarts',  #'CosineAnnealingLR', #'None', # 'LRScheduler', #
+    parser.add_argument('--scheduler', default='CosineAnnealingWarmRestarts', 
                         choices = ['CosineAnnealingWarmRestarts', 'CosineAnnealingLR', 'LRScheduler', 'None'],
                         help='Pytorch Scheduler name: (default: The one used for train')
 
@@ -80,109 +89,13 @@ def parse_args():
                         help="online data augmentation for training",
                         choices=["none", "normal", "random", "randerase",  "augafn", "baseaug", 
                                  "cutout", "mixup", "cutmix", "autoaug", "augmix", "randaug", "test" ],)
-    parser.add_argument("--online_forget_aug", type=str, default="none", #'random',  #
+    parser.add_argument("--online_forget_aug", type=str, default="none", 
                         help="data augmentation for forgetting",
                         choices=["none", "normal", "random", "randerase", "augafn", "baseaug", 
                                  "cutout", "mixup", "cutmix", "autoaug", "augmix", "randaug", "test" ],)
     
-    # parser.add_argument('--adv_lamb', type=float, default=1.0, help='regularization parameter for adversarial part (default: 1.0)')    
-    # parser.add_argument('--feed_lamb', type=float, default=1.0, help='strength parameter of the feedback part (default: 1.0)')
-    # parser.add_argument('--classify_lamb', type=float, default=1.0, help='weight parameter of the classification loss (default: 1.0)')
-
-    # ## protocal parameters
-    # parser.add_argument('--last_k', type=int, default=3, 
-    #                     help="Number of last layers to be used for retraining for unlearning (default: 1)")
-    # parser.add_argument('--re_init', type=argparse2bool, default=True, 
-    #                     help="Whether to re-initialize the weight of last layers for LastKlayer unlearning")   
-    
-    ## parameters for the different protocals
-    # parser.add_argument('--finetune_over_retain', type=argparse2bool, default=True, 
-    #                     help="Whether to finetune the model for retain data for the GA and RL protocal")
-    # # parser.add_argument('--correct_senstive', type=argparse2bool, default=True, 
-    # #                     help="Whether to correct the prediction over retain data for the DISTILL protocal")
-    
-    # ## parameters for the distillation loss
-    # parser.add_argument("--alpha", type=float, default=0.5, help="alpha for distillation loss")
-    # parser.add_argument("--T", type=float, default=3, help="temperature for distillation loss")
-    # # parser.add_argument("--num_layers", type=int, default=2, help="number of layers to be used for distillation")
-    
-    # ## adversarial loss related parameters
-    # parser.add_argument('--adv_loss', type=str, default='none', #'fgsm', # 'udp', #'fgsm', #'vat', #
-    #                     choices=['none', 'vat', 'fgsm', 'udp', 'trades', 'pgd',], help='adversarial loss type')
-    # parser.add_argument('--eps', type=float, default=0.002, help='epsilon for adversarial loss: (Hidden Space Adv. Training!) (default: 0.001)')
-    # parser.add_argument('--clip_min', type=float, default=0.0, help='clip_min for adversarial loss (default: 0.0)')
-    # parser.add_argument('--clip_max', type=float, default=1.0, help='clip_max for adversarial loss (default: 1.0)')
-    # parser.add_argument('--sanity_check', type=argparse2bool, default=False, help='sanity_check for adversarial loss (default: False)')
-    # parser.add_argument('--step_size', type=float, default=0.01, help='step_size for adversarial  Loss (default: 0.01)')  # 1e-6
-    # parser.add_argument('--num_iters', type=int, default=20, help='iteration times for computing adv noise for adversarial loss (default: 1000)')
-    # ##### specifc parameters for some adversarial loss
-    # parser.add_argument('--norm', type=str, default='inf', choices=['inf', '1', '2'], help='norm for FGSMAdvloss (default: inf)')
-    # parser.add_argument('--targeted', type=argparse2bool, default=False, help='targeted for (FGSMAdvLoss and SimVAAdvLoss) (default: False)')
-    # parser.add_argument('--rs', type=argparse2bool, default=False, help='rs for (UDPAdvLoss and TradesAdvLoss) (default: False)')
-    # parser.add_argument('--use_alpha_scheduler', type=argparse2bool, default=False, 
-    #                     help='use the alpha scheduler for (UDPAdvLoss and TradesAdvLoss) (default: False)')
-    # parser.add_argument('--sample_iters', type=str, default='none', choices=['none', 'uniform'], help='sample_iters for UDPAdvLoss (default: none)')
-    # parser.add_argument('--grad_sign', type=argparse2bool, default=False, help='grad_sign for PGDAdvLoss (default: False)')
-    
-    # ## feedback loss related parameters
-    # parser.add_argument('--feedback', type=str, default='none', #'snn',
-    #                     choices=['none', 'contrast', 'snn', 'mmd', 'ot', 'entropy', 'softdis', 'kl', 'l2', 'mse', 'cosine', 'max_entropy'], help='feedback loss type')
-    # parser.add_argument('--format', type=str, default='diff', choices=['diff', 'ratio'], help='format for feedback loss (default: diff)')
-    # parser.add_argument('--margin', type=float, default=1.0, help='margin for contrastive loss (default: 1.0)')
-    # parser.add_argument('--temperature', type=float, default=0.2, help='temperature for adversarial loss (default: 0.05)')
-    # parser.add_argument('--kernel_type', type=str, default='rbf', help='kernel_type for MMDLoss (default: rbf)')
-    # parser.add_argument('--kernel_mul', type=float, default=2.0, help='kernel_mul for MMDLoss (default: 2.0)')
-    # parser.add_argument('--kernel_num', type=int, default=5, help='kernel_num for MMDLoss (default: 5)')
-    # parser.add_argument('--fix_sigma', type=argparse2bool, default=False, help='fix_sigma for MMDLoss (default: False)')
-    
     args = parser.parse_args()
     return args
-
-
-# def get_adv_loss(args):
-#     from losses import VATAdvLoss, FGSMAdvLoss, UDPAdvLoss, PGDAdvLoss, TradesAdvLoss, SimBAAdvLoss
-#     option = args.adv_loss
-#     if option == 'none':
-#         return None
-#     elif option == 'vat':
-#         return VATAdvLoss(args.eps, args.step_size, args.num_iters, args.sanity_check)
-#     elif option == 'fgsm':
-#         norm = np.inf if args.norm == 'inf' else int(args.norm)
-#         return FGSMAdvLoss(args.eps, norm, args.clip_min, args.clip_max, args.targeted, args.sanity_check)
-#     elif option == 'udp':
-#         return UDPAdvLoss(args.eps, args.step_size, args.num_iters, args.clip_min, args.clip_max,
-#                                 args.rs, args.use_alpha_scheduler, args.sample_iters, args.sanity_check)
-#     elif option == 'pgd':
-#         return PGDAdvLoss(args.eps, args.step_size, args.num_iters, args.grad_sign, args.sanity_check)
-#     elif option == 'trades':
-#         return TradesAdvLoss(args.eps, args.step_size, args.num_iters, args.clip_min, args.clip_max, 
-#                                 args.rs, args.use_alpha_scheduler, args.sanity_check)
-#     elif option == 'simba':  # simple-blackbox-attack
-#         return SimBAAdvLoss(args.eps, args.num_iters, args.targeted, args.sanity_check)
-#     else:
-#         raise ValueError("Invalid adv_loss type")
-
-# def get_feedback_loss(args, device):
-#     from losses import ContrastiveLoss, TriSoftNearestNeighborsLoss, TriMMDLoss, TriWassersteinLoss, TriEntropyLoss
-#     option = args.feedback
-#     if option == 'none':
-#         return None
-#     elif option == 'contrast':
-#         return ContrastiveLoss(args.temperature, args.margin, args.class_wise, args.generalize, device)
-#     elif option == 'snn':
-#         return TriSoftNearestNeighborsLoss(args.temperature, args.generalize, device)
-#     elif option == 'mmd':
-#         assert args.format in ['diff', 'ratio'], "Invalid format for MMD loss"
-#         return TriMMDLoss(args.format, args.kernel_type, args.kernel_mul, args.kernel_num, 
-#                             args.fix_sigma, args.class_wise, args.generalize, device)
-#     elif option == 'ot':
-#         assert args.format in ['diff', 'ratio'], "Invalid format for OT loss"
-#         return TriWassersteinLoss(args.format, args.class_wise, args.generalize, device)
-#     elif option == 'entropy':
-#         # assert args.format in ['dist', 'mean'], "Invalid format for entropy distance loss"
-#         return TriEntropyLoss('dist', args.class_wise, args.generalize, device)
-#     else:
-#         raise ValueError("Invalid feedback type")
 
 def model_testing(model, data, data_retain, data_unlearn, batch_size, num_workers, 
                   device, transform, forget_classes, logger):
@@ -201,8 +114,7 @@ def model_testing(model, data, data_retain, data_unlearn, batch_size, num_worker
         retain_acc, retain_auc = __data_test__(model, data_retain, batch_size, num_workers, device, transform)
         logger.info(
             " ###### [Train, Train_rem, Valid, Test, Forget, Remain-Data] "
-            + f"  Acc: {train_acc:.4f}, {train_retain_acc:.4f}, {valid_acc:.4f}, {test_acc:.4f}, {forget_acc:.4f}, {retain_acc:.4f} ######"
-        #     + f"| Auc: {train_auc:.4f}, {valid_auc:.4f}, {test_auc:.4f}, {forget_auc:.4f}, {retain_auc:.4f}, {retain_auc:.4f}###### ")
+            + f" Acc: {train_acc:.4f}, {train_retain_acc:.4f}, {valid_acc:.4f}, {test_acc:.4f}, {forget_acc:.4f}, {retain_acc:.4f} ######"
         )
     else:
         train_retain_acc, _ =  __data_test__(model, data['retain'], batch_size, num_workers, device, transform)
@@ -220,15 +132,27 @@ def model_testing(model, data, data_retain, data_unlearn, batch_size, num_worker
 
 if __name__ == "__main__":
     args = parse_args()
+    if args.forget_classes is not None:
+        try:
+            # 移除空格并按逗号分割
+            class_str_list = str(args.forget_classes).split(',')
+            # 转换为整数列表
+            args.forget_classes = [int(c.strip()) for c in class_str_list if c.strip()]
+        except ValueError:
+            print(f"Error: --forget_classes parameter '{args.forget_classes}' is invalid. Please use integers separated by commas (e.g., '5' or '3,8').")
+            exit(1)
     args.unlearn_method = 'genun'
-    # args.model_path = "./outs/cifar10_-1_genun/model_bases/cifar10_resnet18/ORG/ORG_GENE_M_lr-0.0002.pt"
-
+    
     ## set output path
     outs = SingletonString()
     outs.content = args.out_dir
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else "cpu")
 
     from data_tool import DataLoaderTool, DataStore, construct_data
+    from data_tool import flatten_subset
+    from tool import PathGenerator
+    from models_genun import GeneModUnlearn
+
     DataStore.create_basic_folders()
     seed_everything(args.seed)
     
@@ -246,37 +170,36 @@ if __name__ == "__main__":
     logger.info("load dataset and transform")
     dt_mean, dt_std, dt_size = DataStore.get_normalizer(args.dataset)
     feature_dims, num_classes = DataStore.get_dataset_info(args.dataset)
-    if args.arch in ['densenet', 'vit']:   # 'resnet50',
+    if args.arch in ['densenet', 'vit']: 
         dt_size = 224
         feature_dims = (3, dt_size, dt_size)
     tran_process = Transforms(dt_mean, dt_std, dt_size)
+    
     ## pre-processing transform setup
     train_trans = tran_process.get_transform(args.preproc_train_transform, num_classes)
     test_trans = tran_process.get_transform(args.preproc_test_transform, num_classes)
     train_data, test_data = DataLoaderTool.load_dataset(args.dataset, train_trans, test_trans, **dataset_conf)
     test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-    data, data_unlearn, data_retain = construct_data(train_data, test_data, train_size=args.num_samples, 
-                valid_size=args.valid_size, forget_size=args.num_to_forget, forget_classes=args.forget_classes)
-    
-    ##  import classes after setting the out path
-    from data_tool import flatten_subset
-    from tool import PathGenerator
-    # from models import DirectUnlearn, RobustUnlearn, RobustForget
-    from models_genun import GeneModUnlearn
 
-    # logger.info("Get adversarial and feedback loss")
-    adv_losser = 'none' #get_adv_loss(args)
-    feed_losser = 'none' #args.feedback
-    # if args.adv_loss in ['vat', 'fgsm']:
-    #     if args.online_train_aug != "none" and args.preproc_train_transform == "none":
-    #         args.online_train_aug = "normal"
-    #     if args.online_forget_aug != "none"  and args.preproc_train_transform == "none":
-    #         args.online_forget_aug = "test"
+    # ================= [修改点 1] 处理类别遗忘的数据集构建 =================
+    # 如果指定了 forget_classes，将 num_to_forget 设为 -1 (代表所有)，确保包含该类的所有样本
+    current_forget_size = args.num_to_forget
+
+    data, data_unlearn, data_retain = construct_data(train_data, test_data, train_size=args.num_samples, 
+                valid_size=args.valid_size, forget_size=current_forget_size, forget_classes=args.forget_classes)
+    # ====================================================================
+    
+    # 评估纯预训练模型
+    logger.info(f" +++++++++++ Evaluation: Generic Pre-trained Model ({args.arch}) +++++++++++ ")
+    base_model = get_model(args.arch, feature_dims, num_classes, pretrained=True).to(device)
+    model_testing(base_model, data, data_retain, data_unlearn, args.batch_size, args.num_workers, 
+                  device, transform, None, logger)
+    del base_model
+    torch.cuda.empty_cache()
+    logger.info(" +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ \n")
 
     ## load original model and test
     logger.info(f"Load original model from @ {args.model_path}")
-    # init_mod_ = None
-    # init_mod_ = get_model(args.arch, feature_dims, num_classes, pretrained=True).to(device)
     model_ = load_model(args.model_path).to(device)
 
     ## pre-evaluation of the original model
@@ -286,42 +209,16 @@ if __name__ == "__main__":
     ## apply different unlearn models
     logger.info("Initialize unlearn model")
     mu_er = GeneModUnlearn(logpath, args.logname, args.out_dir, name=f'model_{args.protocal}')
-
-    # unlearner = None
-    # if args.protocal in ['DU']:
-    #     unlearner = DirectUnlearn
-    # elif args.protocal in ['FT', 'LASTK']:
-    #     unlearner = RobustUnlearn
-    # elif args.protocal in ['GA', 'RL']:
-    #     unlearner = RobustForget
-    # else:
-    #     raise ValueError("Invalid protocal")
-
-    ## unlearn model initialization
-    # robun = unlearner(logpath, args.logname, args.out_dir, out_name=f'model_{args.protocal}_S')
-    # robun.logger.info(args)
-    # logger.info(f" +++++++  Selected top-K informative samples: {args.top_k}")
     
     # model setting
     logger.info("Set parameters and basic configurations")
     
-    # 支持多学习率尝试
-    lr_list = [ 0.001 ]  # 可自行扩展
+    lr_list = [ args.lr ] 
     for lr in lr_list:
         args.lr = lr
         logger.info(f"==== Running GenUn with lr={lr} ====")
         mu_er.set_params(**vars(args))
         mu_er.config_transform(dt_mean, dt_std, dt_size)
-        
-        # ### set data augmentation for online training and forgetting
-        # if args.online_train_aug in ["random", "randaug", "augmix", "autoaug", "autoafn", "cutout", "randerase"]:
-        #     num_cls = len(np.unique(data['retain'].dataset.targets))
-        #     data['retain'].dataset.transform = processor.get_transform(args.online_train_aug, num_cls)
-        # else:
-        #     robun.config_transform(dt_mean, dt_std, dt_size)
-        # if args.online_forget_aug != "none":
-        #     num_cls = len(np.unique(data['forget'].dataset.targets))
-        #     data['forget'].dataset.transform = processor.get_transform(args.online_forget_aug, num_cls)
         
         if args.sample_ratio > 0 and args.sample_ratio < 1:
             from torch.utils.data import Subset
@@ -332,63 +229,114 @@ if __name__ == "__main__":
         ## set dataset for unlearning
         logger.info("Set unlearning data")
         mu_er.set_data(data, num_classes, args.batch_size, args.num_workers)
-        ## evaluation the original model
-        # robun.evaluation(mod_, args.lossfn, device, 'none')
+        
         acc_org, auc_org = mu_er.model_evaluate(model_, test_loader, device)
+
+        # ================= [修改点 2] 类别遗忘的参数冻结与梯度掩码 =================
+        # 逻辑：
+        # 1. 必须是类别遗忘模式 (forget_classes is not None)
+        # 2. 且 mask_updates 为 True (默认)
+        
+        grad_hook_handle_w = None
+        grad_hook_handle_b = None
+        
+        if args.forget_classes is not None:
+            # ==== 分支：类别遗忘 ====
+            if args.mask_updates:
+                # [模式 A]: 冻结骨干 + Mask分类层 (Partial Update)
+                try:
+                    target_cls_idx = args.forget_classes[0]
+                    logger.info(f"Configuring Gradient Mask for Class-wise Unlearning (Class {target_cls_idx})...")
+
+                    last_layer_name = 'fc' 
+                    if args.arch.startswith('vgg') or 'densenet' in args.arch:
+                        last_layer_name = 'classifier'
+                    elif 'vit' in args.arch:
+                        last_layer_name = 'head'
+                    
+                    last_module = None
+                    for n, m in model_.named_modules():
+                        if n == last_layer_name:
+                            last_module = m
+                            break
+                    
+                    if last_module is None:
+                        if hasattr(model_, 'fc'): last_module, last_layer_name = model_.fc, 'fc'
+                        elif hasattr(model_, 'classifier'): last_module, last_layer_name = model_.classifier, 'classifier'
+                    
+                    if last_module is None:
+                        raise ValueError(f"Could not find last layer '{last_layer_name}' in model {args.arch}")
+
+                    # 1. 冻结骨干
+                    for name, param in model_.named_parameters():
+                        if last_layer_name not in name:
+                            param.requires_grad = False
+                    logger.info(f"Backbone frozen. Only '{last_layer_name}' is trainable.")
+
+                    # 2. 注册 Hook (Mask)
+                    weight_mask = torch.zeros_like(last_module.weight)
+                    weight_mask[target_cls_idx, :] = 1.0
+                    
+                    def get_mask_hook(mask):
+                        def hook(grad):
+                            return grad * mask.to(grad.device)
+                        return hook
+
+                    grad_hook_handle_w = last_module.weight.register_hook(get_mask_hook(weight_mask))
+                    
+                    if last_module.bias is not None:
+                        bias_mask = torch.zeros_like(last_module.bias)
+                        bias_mask[target_cls_idx] = 1.0
+                        grad_hook_handle_b = last_module.bias.register_hook(get_mask_hook(bias_mask))
+                    
+                    logger.info(f"Gradient mask applied. Only weights for Class {target_cls_idx} will be updated.")
+
+                except Exception as e:
+                    logger.error(f"Error setting up class-wise unlearning: {e}")
+                    exit(1)
+            else:
+                # [模式 B]: 类别遗忘，但更新所有参数 (Full Update)
+                logger.info(f"Class-wise Unlearning (Class {args.forget_classes[0]}), but updating ALL parameters (End-to-End).")
+        
+        else:
+            # ==== 分支：随机遗忘 (Random Unlearning) ====
+            logger.info("Standard Random Unlearning Mode (All layers trainable).")
+        # =========================================================================
 
         ## perform forget-sample unlearn
         logger.info(" +++++++++++++++ Start Unlearning (in process) +++++++++++++++")
         ckpt_path = PathGenerator.get_checkpoint_path(f"{args.dataset}_{args.num_samples}_{args.arch}")
+        
         unlearn_mod, ckpt = mu_er.unlearn(
             model_, None, None, args.patience, args.scheduler, args.optim,
             args.online_train_aug, args.online_forget_aug, device, ckpt_path, 
             model_type=args.arch, over_forget=args.over_forget, suffix=trans_params,
         )
-
-        # if unlearner == DirectUnlearn:
-        #     feed_losser = args.feedback
-        #     unlearn_mod, ckpt = mu_er.unlearn(
-        #         model_, init_mod_, adv_losser, args.feedback, args.patience, args.lossfn,
-        #         args.scheduler, args.optim, args.online_train_aug, args.online_forget_aug, 
-        #         device, ckpt_path, is_finetune=args.finetune_over_retain, model_type=args.arch, 
-        #         forget_classes=args.forget_classes )
-        # elif unlearner == RobustUnlearn:
-        #     feed_losser = get_feedback_loss(args, device)
-        #     unlearn_mod, ckpt = mu_er.unlearn(
-        #         model_, args.protocal, adv_losser, feed_losser, args.patience, args.lossfn, 
-        #         args.scheduler, args.optim, args.online_train_aug, args.online_forget_aug, 
-        #         device, ckpt_path, suffix=trans_params, ast_k=args.last_k, re_init=args.re_init, 
-        #         ltop_k=args.top_k, model_type=args.arch, forget_classes=args.forget_classes )
-        # elif unlearner == RobustForget:
-        #     feed_losser = get_feedback_loss(args, device)
-        #     unlearn_mod, ckpt = mu_er.unlearn(
-        #         model_, args.protocal, args.finetune_over_retain, adv_losser, feed_losser, 
-        #         args.patience, args.lossfn, args.scheduler, args.optim, 
-        #         args.online_train_aug, args.online_forget_aug, device, ckpt_path, 
-        #         model_type=args.arch, suffix=trans_params, forget_classes=args.forget_classes )
-        # else:
-        #     raise ValueError("Invalid unlearn method")
-
+        adv_losser = 'none'
+        feed_losser = 'none'
         modfn = f"{args.arch}_{args.protocal}_lr-{lr}_{trans_params}_adv-{adv_losser}_fdbk-{feed_losser}_overforget-{args.over_forget}_{mu_er._suffix_}_best.pt" 
         modout_path = os.path.join(mu_er.path['model'], modfn)
         save_model(unlearn_mod, modout_path)
         logger.info(f" ++++++++++++++++++ Model saved @ {modout_path} done! +++++++++++++++++++")    
 
+        # 清理 hooks
+        if grad_hook_handle_w is not None: grad_hook_handle_w.remove()
+        if grad_hook_handle_b is not None: grad_hook_handle_b.remove()
+
         ## evaluation the unlearned model
         from learner import complete_test
         logger.info("\n" + "++++++++"*5)
         logger.info(" +++ Evaluation: Unlearned model test +++")
-        # robun.evaluation(unlearn_mod, args.lossfn, device, "none")
-        for sub_dat in ['train', 'retain', 'valid', 'test', 'forget']: # data.items():  ## 
-            t_loader = DataLoader(data[sub_dat], args.batch_size, False, num_workers=args.num_workers)
-            acc_dt, auc_dt = complete_test(unlearn_mod, t_loader, device, transform)
-            logger.info(f"##### [ {sub_dat:6} ]: ACC: {acc_dt:.4f}")   # , AUC: {auc_dt:.4f}
+        for sub_dat in ['train', 'retain', 'valid', 'test', 'forget']: 
+            if sub_dat in data:
+                t_loader = DataLoader(data[sub_dat], args.batch_size, False, num_workers=args.num_workers)
+                acc_dt, auc_dt = complete_test(unlearn_mod, t_loader, device, transform)
+                logger.info(f"##### [ {sub_dat:6} ]: ACC: {acc_dt:.4f}")
 
         acc_unlearn, auc_unlearn = mu_er.model_evaluate(unlearn_mod, test_loader, device)
         logger.info(f"Accuracy: Original: {acc_org:.4f} --> Unlearned: {acc_unlearn:.4f}")
 
         logger.info(" +++++++++++ Unlearned Model Test +++++++++++ ")
-        # logger.info(f" +++++++++++ Forget classes: {args.forget_classes} +++++++++++ ")
         model_testing(unlearn_mod, data, data_retain, data_unlearn, args.batch_size, args.num_workers, 
                       device, transform, args.forget_classes, logger)
         logger.info("********************************* \n\n")

@@ -2,7 +2,7 @@ from os import path
 import time
 import numpy as np
 from copy import deepcopy
-
+import os
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -433,4 +433,348 @@ class UnlearnInfluence(BasicUnlearnSchema):
         self.logger.info(f"==> Influence Unlearning done @ [{time.time() - start_time_}] s!")
         
         model._model = model_
+        return model
+
+import argparse
+import time
+import copy
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+from schema import BasicUnlearnSchema
+from model_bases import DeepModels
+
+# ==========================================
+# SCRUB Helper Classes and Functions
+# ==========================================
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+class DistillKL(nn.Module):
+    """Distilling the Knowledge in a Neural Network"""
+    def __init__(self, T):
+        super(DistillKL, self).__init__()
+        self.T = T
+
+    def forward(self, y_s, y_t):
+        p_s = F.log_softmax(y_s / self.T, dim=1)
+        p_t = F.softmax(y_t / self.T, dim=1)
+        loss = F.kl_div(p_s, p_t, size_average=False) * (self.T**2) / y_s.shape[0]
+        return loss
+
+def param_dist(model, swa_model, p):
+    dist = 0.
+    for p1, p2 in zip(model.parameters(), swa_model.parameters()):
+        dist += torch.norm(p1 - p2, p='fro')
+    return p * dist
+
+def adjust_learning_rate(epoch, args, optimizer):
+    """Sets the learning rate to the initial LR decayed by decay rate every steep step"""
+    steps = np.sum(epoch > np.asarray(args.lr_decay_epochs))
+    new_lr = args.sgda_learning_rate
+    if steps > 0:
+        new_lr = args.sgda_learning_rate * (args.lr_decay_rate ** steps)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = new_lr
+    return new_lr
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the accuracy over the k top predictions for the specified values of k"""
+    with torch.no_grad():
+        maxk = max(topk)
+        batch_size = target.size(0)
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        correct = pred.eq(target.view(1, -1).expand_as(pred))
+        res = []
+        for k in topk:
+            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+            res.append(correct_k.mul_(100.0 / batch_size))
+        return res
+
+def train_distill(epoch, train_loader, module_list, swa_model, criterion_list, optimizer, 
+                  args, split, logger, quiet=False):
+    """One epoch distillation"""
+    # set modules as train()
+    for module in module_list:
+        module.train()
+    # set teacher as eval()
+    module_list[-1].eval()
+
+    criterion_cls = criterion_list[0]
+    criterion_div = criterion_list[1]
+    criterion_kd = criterion_list[2]
+
+    model_s = module_list[0]
+    model_t = module_list[-1]
+
+    losses = AverageMeter()
+    kd_losses = AverageMeter()
+    top1 = AverageMeter()
+
+    for idx, (input, target) in enumerate(train_loader):
+        input = input.float()
+        input, target = input.to(args.device), target.to(args.device)
+
+        # ===================forward=====================
+        logit_s = model_s(input)
+        with torch.no_grad():
+            logit_t = model_t(input)
+
+        # cls + kl div
+        loss_cls = criterion_cls(logit_s, target)
+        loss_div = criterion_div(logit_s, logit_t)
+        loss_kd = 0 # Default to 0 as per provided code logic for 'kd'
+
+        if split == "minimize":
+            loss = args.gamma * loss_cls + args.alpha * loss_div + args.beta * loss_kd
+        elif split == "maximize":
+            loss = -loss_div
+
+        if swa_model is not None:
+            loss += param_dist(model_s, swa_model, args.smoothing)
+
+        if split == "minimize":
+            acc1, _ = accuracy(logit_s, target, topk=(1,1))
+            losses.update(loss.item(), input.size(0))
+            top1.update(acc1[0], input.size(0))
+        elif split == "maximize":
+            kd_losses.update(loss.item(), input.size(0))
+
+        # ===================backward=====================
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    if split == "minimize":
+        return top1.avg, losses.avg
+    else:
+        return kd_losses.avg
+
+# ==========================================
+# SCRUB Class Implementation
+# ==========================================
+
+class UnlearnScrub(BasicUnlearnSchema):
+    def __init__(self, logpath, logname) -> None:
+        super(UnlearnScrub, self).__init__(logpath, logname)
+
+    def __get_name__(self) -> str:
+        return "SCRUB"
+
+    def model_unlearn(self, model: DeepModels, data, batch_size, device, ckpt_path, **kwargs):
+        self.logger.info(f" ###### SCRUB Unlearning: Teacher-Student Distillation ######")
+        
+        # 1. Configuration Setup (Defaults based on your provided log)
+        # Construct a namespace to act like 'args' in the original code
+        args = argparse.Namespace()
+        args.device = device
+        
+        # Hyperparameters from your log
+        args.sgda_epochs = kwargs.get('sgda_epochs', 5)
+        args.sgda_learning_rate = kwargs.get('sgda_learning_rate', 0.0005)
+        args.lr_decay_epochs = kwargs.get('lr_decay_epochs', [3, 5, 9])
+        args.lr_decay_rate = kwargs.get('lr_decay_rate', 0.1)
+        args.sgda_weight_decay = kwargs.get('sgda_weight_decay', 5e-4)
+        args.sgda_momentum = kwargs.get('sgda_momentum', 0.9)
+        
+        args.msteps = kwargs.get('msteps', 2)
+        args.alpha = kwargs.get('alpha', 0.5)      # KL divergence weight (Model Divergence)
+        args.gamma = kwargs.get('gamma', 1.0)      # Classification weight
+        args.beta = kwargs.get('beta', 0.0)        # KD weight
+        args.kd_T = kwargs.get('kd_T', 4)
+        args.smoothing = kwargs.get('smoothing', 0.5)
+        args.distill = kwargs.get('distill', 'kd')
+        
+        # Batch sizes (Log indicates retain=16, forget=64)
+        args.retain_bs = kwargs.get('retain_bs', 16)
+        args.forget_bs = kwargs.get('forget_bs', 64)
+        
+        # Optimizer selection
+        optim_name = kwargs.get('optim', 'adam') # Default to Adam based on log
+
+        # 2. Prepare Models
+        # Teacher: Original Model (Frozen)
+        teacher = copy.deepcopy(model._model)
+        teacher.eval()
+        teacher = teacher.to(device)
+        
+        # Student: Model to be unlearned (Initialize with original weights)
+        student = copy.deepcopy(model._model)
+        student = student.to(device)
+        
+        # 3. Setup Optimizers and Criteria
+        module_list = nn.ModuleList([student, teacher]).to(device)
+        trainable_list = nn.ModuleList([student])
+
+        if optim_name == "sgd":
+            optimizer = optim.SGD(trainable_list.parameters(), lr=args.sgda_learning_rate, 
+                                  momentum=args.sgda_momentum, weight_decay=args.sgda_weight_decay)
+        elif optim_name == "adam": 
+            optimizer = optim.Adam(trainable_list.parameters(), lr=args.sgda_learning_rate, 
+                                   weight_decay=args.sgda_weight_decay)
+        elif optim_name == "rmsp":
+            optimizer = optim.RMSprop(trainable_list.parameters(), lr=args.sgda_learning_rate, 
+                                      momentum=args.sgda_momentum, weight_decay=args.sgda_weight_decay)
+        else:
+            # Fallback to framework picker if needed, but SCRUB specifies these
+            optimizer = optim.Adam(trainable_list.parameters(), lr=args.sgda_learning_rate)
+
+        criterion_cls = nn.CrossEntropyLoss()
+        criterion_div = DistillKL(args.kd_T)
+        criterion_kd = DistillKL(args.kd_T)
+
+        criterion_list = nn.ModuleList([criterion_cls, criterion_div, criterion_kd]).to(device)
+
+        # 4. Data Loaders
+        # NOTE: SCRUB uses separate loaders for retain and forget
+        # We assume data['retain'] and data['forget'] are Datasets
+        retain_loader = DataLoader(data['retain'], batch_size=args.retain_bs, shuffle=True)
+        forget_loader = DataLoader(data['forget'], batch_size=args.forget_bs, shuffle=True)
+
+        # 5. SCRUB Training Loop
+        start_time = time.time()
+        self.logger.info("==> SCRUB unlearning loop started ...")
+        
+        for epoch in range(1, args.sgda_epochs + 1):
+            lr = adjust_learning_rate(epoch, args, optimizer)
+            
+            maximize_loss = 0.0
+            # Maximize Step (Forget Set) - only for first msteps
+            if epoch <= args.msteps:
+                maximize_loss = train_distill(epoch, forget_loader, module_list, None, 
+                                              criterion_list, optimizer, args, "maximize", self.logger, quiet=True)
+            
+            # Minimize Step (Retain Set)
+            train_acc, train_loss = train_distill(epoch, retain_loader, module_list, None, 
+                                                  criterion_list, optimizer, args, "minimize", self.logger, quiet=True)
+            
+            self.logger.info("Epoch: [{}/{}] Max_Loss: {:.2f} Min_Loss: {:.2f} Retain_Acc: {:.2f} LR: {:.5f}".format(
+                epoch, args.sgda_epochs, maximize_loss, train_loss, train_acc, lr))
+
+        self.logger.info(" +++++++++++ Time taken: {:.4f} sec +++++++++++ ".format(time.time() - start_time))
+
+        # 6. Update original model with student weights
+        model._model = student
+        self.logger.info(f"==> Model unlearning done!")
+        
+        return model
+
+# ==========================================================
+# Add the following imports to the top of your file
+# ==========================================================
+from contrast_model import ContrastMomentUnlearn, ContrastRunningUnlearn, ContrastModelWrapper
+
+# ==========================================================
+# Append this class to your existing Unlearn methods
+# ==========================================================
+
+# REF: GENF / Contrastive Unlearning Method
+class UnlearnGenF(BasicUnlearnSchema):
+    def __init__(self, logpath, logname) -> None:
+        super(UnlearnGenF, self).__init__(logpath, logname)
+
+    def __get_name__(self) -> str:
+        return "GenF"  # Corresponds to 'contun' in your logs
+
+    def model_unlearn(self, model: DeepModels, data, batch_size, device, ckpt_path, **kwargs):
+        self.logger.info(f" ###### Unlearn using GENF (Contrastive Unlearning) ######")
+        
+        # 1. Parameter Setup (Defaults based on your provided logs)
+        # Log: projector_dimension=256, outs_dimension=128
+        proj_dims = kwargs.get('projector_dimension', 256)
+        outs_dim = kwargs.get('outs_dimension', 128)
+        
+        # Log: protocal='moment'
+        protocol = kwargs.get('protocal', 'moment') 
+        
+        # Log: lr=0.001, weight_decay=0.01, momentum=0.9
+        lr = kwargs.get('lr', 0.001)
+        weight_decay = kwargs.get('weight_decay', 0.01)
+        momentum = kwargs.get('momentum', 0.9)
+        
+        
+        weight_forget = kwargs.get('weight_forget', 5.0)
+        weight_retain = kwargs.get('weight_retain', 1.0)
+        
+        # Log: queue_size=500, dynamic_weight=0
+        queue_size = kwargs.get('queue_size', 500)
+        dynamic_weight = kwargs.get('dynamic_weight', 0)
+        
+        # 2. Model Initialization
+        # Wrap the underlying PyTorch model from DeepModels
+        base_model = ContrastModelWrapper(model._model, proj_dims, outs_dim)
+
+        # Select Unlearner Class
+        UnlearnerCls = ContrastRunningUnlearn if protocol == 'running' else ContrastMomentUnlearn
+        
+        genf_out_dir = kwargs.get('out_dir', './outs')
+        contun = UnlearnerCls(self.logpath, self.logname, genf_out_dir, out_name='model_contun')
+        
+        contun.set_params(
+            epochs=kwargs.get('epochs', 2),
+            batch_size=batch_size,
+            lr=lr,
+            weight_decay=weight_decay,
+            momentum=momentum,
+            save_checkpoints=kwargs.get('save_checkpoint', False),
+            class_wise=kwargs.get('class_wise', True),
+            seed=kwargs.get('seed', 0),
+            dynamic_weights=dynamic_weight
+        )
+
+        num_classes = kwargs.get('num_classes', len(np.unique(data['train'].dataset.targets)))
+        num_workers = kwargs.get('num_workers', 4)
+        contun.set_data(data, num_classes, batch_size, num_workers)
+
+        self.logger.info(" +++++++++++++++ Start GENF Unlearning +++++++++++++++")
+        
+        # [修改 2 - 关键修复] 
+        # ckpt_path 是完整的文件路径 (xxx.pth)，GENF 需要的是目录。
+        # 这里提取它的父目录 (dirname) 传进去。
+        ckpt_dir = os.path.dirname(ckpt_path)
+        
+        # 确保目录存在
+        if not os.path.exists(ckpt_dir):
+            os.makedirs(ckpt_dir, exist_ok=True)
+
+        unlearn_mod, _ = contun.unlearn(
+            base_model, 
+            protocal='FT',
+            loss=kwargs.get('lossfn', 'ce'),
+            patience=kwargs.get('patience', 10),
+            scheduler_option=kwargs.get('scheduler', 'CosineAnnealingWarmRestarts'),
+            optimization=kwargs.get('optim', 'adam'),
+            augument_retain=kwargs.get('augment_retain', False),
+            device=device,
+            checkpoint_path=ckpt_dir,  # <--- 修复此处：传入目录，而非文件路径
+            model_type=kwargs.get('arch', 'resnet18'),
+            queue_size=queue_size,
+            weight_forget=weight_forget,
+            weight_retain=weight_retain,
+            output_dim=outs_dim
+        )
+        
+        self.logger.info(f"==> GENF Model unlearning done!")
+        
+        model._model = unlearn_mod
         return model

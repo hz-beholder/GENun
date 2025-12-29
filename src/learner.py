@@ -598,11 +598,14 @@ def train(model, train_loader, valid_loader, test_loader, params, logger,
         #                         f'Acc: Tr:{tr_acc:.4f}, Ts:{ts_acc:.4f}, DIFF.:{ts_acc - tr_acc:.4f}')
 
         ## @ save the well-generalized model during the training process
-        if iter_ == 0 or (val_acc > best_metric and acc_diff >= tr_acc - val_acc):  # val_acc >= tr_acc
+        if iter_ == 0 or (val_acc > best_metric and acc_diff <= tr_acc - val_acc):  # val_acc >= tr_acc
             logger.info('  +++> Well-generalized model checkpoint: [{:.4f}]\t'.format(best_metric) + 'current: [{:.4f}]'.format(val_acc))
             acc_diff = tr_acc - val_acc
             save_model(model, f'{checkpoint_dir}_GENE_M_{iter_}.pt')
-                    
+        else:
+            save_model(model, f'{checkpoint_dir}_GENE_M_{iter_}.pt')        
+
+            
         ## Uncomment if need best training loss model
         if  val_acc > best_metric:
             logger.info('==> Best Validation Acc: previous: [{:.4f}]\t'.format(best_metric) + 'current: [{:.4f}]\t'.format(val_acc) + 'Time: [{:.4f}]'.format(train_time))

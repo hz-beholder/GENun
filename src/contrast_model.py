@@ -525,7 +525,7 @@ class ContrastMomentUnlearn(UnlearnBasic):
             
             _, val_acc = test(model_cur, self.dataloaders['valid'], criterion, device)
             _, for_acc = test(model_cur, self.dataloaders['forget'], criterion, device)
-            metric = val_acc - np.abs(for_acc - for_acc)
+            metric = val_acc - np.abs(for_acc - val_acc)
             
             if metric > best_metric:
                 best_time = cum_time + t_all
@@ -588,13 +588,13 @@ class ContrastMomentUnlearn(UnlearnBasic):
         init_wt_r = kwargs.get('weight_retain', 1.0)
         epochs = self.params['epochs']
         # aug_retain = kwargs.get('augument_retain', False)
-        queue_size = kwargs.get('queue_size', 1024)
+        queue_size = kwargs.get('queue_size', 4096)
         
         retain_data = self.dataloaders['retain']
         forget_data = self.dataloaders['forget']
         
         ## initialize the MoCo Queue
-        moco_model = MoCoVar(model, outs_dim, queue_size=queue_size, momentum=0.9,temperature=3)
+        moco_model = MoCoVar(model, outs_dim, queue_size=queue_size, momentum=0.8, temperature=0.1)
         moco_model.to(device)
         # moco_model.train()
         optimizer = optimizer_picker(optimization, moco_model.parameters(), lr=self.params['lr'], 
@@ -670,10 +670,10 @@ class ContrastMomentUnlearn(UnlearnBasic):
             t_all = time.time() - time_s
             self.logger.info(f"Epoch: {epoch+1}/{self.params['epochs']} |  Time: {t_all:.3f} sec: Loss: {loss_run}")
             self.logger.info(f"Loss: [ Cls: {l_cls.avg:.4f} | Cont: {l_con.avg:.4f} ]")
-            _, ret_acc = test(model_cur, self.dataloaders['retain'], criterion, device)
+            
             _, val_acc = test(model_cur, self.dataloaders['valid'], criterion, device)
             _, for_acc = test(model_cur, self.dataloaders['forget'], criterion, device)
-            metric = metric = val_acc - np.abs(for_acc - val_acc)
+            metric = val_acc - np.abs(for_acc - val_acc)
             
             if metric > best_metric:
                 best_time = cum_time + t_all
@@ -698,7 +698,7 @@ class ContrastMomentUnlearn(UnlearnBasic):
                 out_path_ = os.path.join(self.path['model'], self.__get_name__(), outfn)
                 save_model(model_cur, out_path_)
             
-            early_stopping(true_met, model_cur)
+            early_stopping(loss_run, model_cur)
             if early_stopping.early_stop:
                 self.logger.info("+++" * 10 + f"\t Early stopping at epoch: {epoch} \t" + "+++" * 10)
                 break
@@ -934,10 +934,10 @@ class RobustContrastMomentUnlearn(UnlearnBasic):
 
         model_type = kwargs.get('model_type', 'unknown')
         epochs = self.params['epochs']
-        wt_f = kwargs.get('weight_forget', 1.0)
+        wt_f = kwargs.get('weight_forget', 5.0)
         wt_r = kwargs.get('weight_retain', 1.0)
         retain_augment = kwargs.get('augument_retain', False)
-        tempreture = kwargs.get('temperature', 0.1)
+        tempreture = kwargs.get('temperature', 0.07)
         momentum = kwargs.get('moco_momentum', 0.8)
         
         ## data for model unlearning
@@ -1051,9 +1051,9 @@ class RobustContrastMomentUnlearn(UnlearnBasic):
             if self.params['save_checkpoints'] and (epoch % 10 == 0) and epoch > 0:
                 outfn = f"{model_type}_{protocal}_augr-{retain_augment}_{self._suffix_}_ep-{epoch}.pt"
                 out_path_ = os.path.join(self.path['model'], self.__get_name__(), outfn)
-                save_model(metric, out_path_)
+                save_model(model, out_path_)
             
-            early_stopping(loss_run, model_cur)
+            early_stopping(loss_run, model)
             if early_stopping.early_stop:
                 self.logger.info("+++" * 10 + f"\t Early stopping at epoch: {epoch} \t" + "+++" * 10)
                 break
